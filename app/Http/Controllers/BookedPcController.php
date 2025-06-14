@@ -9,6 +9,59 @@ use Illuminate\Support\Facades\Validator;
 
 class BookedPcController extends Controller
 {
+    public function getBookedTimes(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'warnet_id' => 'required|integer|exists:warnets,id_warnet',
+            'pc_id' => 'required|integer|exists:pcs,id_pc',
+            'date' => 'required|date_format:Y-m-d',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $warnetId = $request->input('warnet_id');
+            $pcId = $request->input('pc_id');
+            $date = Carbon::parse($request->input('date'))->startOfDay();
+
+            $pcExists = DB::table('pcs')
+                ->where('id_pc', $pcId)
+                ->where('id_warnet', $warnetId)
+                ->exists();
+
+            if (!$pcExists) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'The specified PC does not belong to the given warnet.',
+                ], 400);
+            }
+
+            $bookedTimes = DB::table('booked_pcs')
+                ->where('id_pc', $pcId)
+                ->where('booking_status', 'confirmed')
+                ->whereDate('start_time', $date)
+                ->select(
+                    DB::raw("TIME_FORMAT(start_time, '%H:%i:%s') as start_time"),
+                    DB::raw("TIME_FORMAT(end_time, '%H:%i:%s') as end_time")
+                )
+                ->get();
+
+            return response()->json($bookedTimes, 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch booked times',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     public function store(Request $request)
     {
         try {
@@ -95,6 +148,7 @@ class BookedPcController extends Controller
     }
 
 
+
     public function getHistory($userId)
     {
         try {
@@ -106,9 +160,12 @@ class BookedPcController extends Controller
                 ], 400);
             }
 
+            // Set time zone to Asia/Jakarta
+            Carbon::setToStringFormat('Asia/Jakarta');
+
             // Ambil semua transaksi berdasarkan id_user
             $transactions = DB::table('transactions')
-                ->where('transactions.id_user', $userId) // Specify transactions.id_user
+                ->where('transactions.id_user', $userId)
                 ->leftJoin('booked_pcs', function ($join) {
                     $join->on('transactions.reference_id', '=', 'booked_pcs.id_booked_pc')
                         ->where('transactions.transaction_type', '=', 'pc_booking');
@@ -133,7 +190,7 @@ class BookedPcController extends Controller
                     'transactions.id_transaction as transactionId',
                     'transactions.transaction_type',
                     'transactions.amount',
-                    'transactions.created_at as date',
+                    'transactions.created_at as transaction_date',
                     'booked_pcs.start_time as pc_start_time',
                     'booked_pcs.end_time as pc_end_time',
                     'pcs.pc_name as pc_name',
@@ -148,63 +205,79 @@ class BookedPcController extends Controller
                 )
                 ->get();
 
-            // Format data untuk frontend
+            // Format data untuk frontend with error handling for invalid dates
             $formattedTransactions = $transactions->map(function ($transaction) {
-                $date = Carbon::parse($transaction->date)->format('d M Y');
-                $amount = "Rp " . number_format($transaction->amount, 0, ',', '.');
-                $transactionId = "TXN{$transaction->transactionId}";
+                try {
+                    $amount = "Rp " . number_format($transaction->amount, 0, ',', '.');
+                    $transactionId = "TXN{$transaction->transactionId}";
 
-                if ($transaction->transaction_type === 'pc_booking' && $transaction->pc_start_time && $transaction->pc_end_time) {
-                    $startTime = Carbon::parse($transaction->pc_start_time);
-                    $endTime = Carbon::parse($transaction->pc_end_time);
+                    if ($transaction->transaction_type === 'pc_booking' && $transaction->pc_start_time && $transaction->pc_end_time) {
+                        $startTime = Carbon::parse($transaction->pc_start_time);
+                        $endTime = Carbon::parse($transaction->pc_end_time);
+                        $date = $startTime->format('d M y H:m') . ' to ' . $endTime->format('H:m');
+                        return [
+                            'transaction_type' => $transaction->transaction_type,
+                            'title' => "Rental PC {$transaction->pc_name} at {$transaction->pc_warnet_name}",
+                            'amount' => $amount,
+                            'date' => $date,
+                            'details' => "Booked PC {$transaction->pc_name} from {$startTime->format('H:i')} to {$endTime->format('H:i')} on {$startTime->format('d M y')}",
+                            'transactionId' => $transactionId,
+                        ];
+                    } elseif ($transaction->transaction_type === 'console_booking' && $transaction->console_start_time && $transaction->console_end_time) {
+                        $startTime = Carbon::parse($transaction->console_start_time);
+                        $endTime = Carbon::parse($transaction->console_end_time);
+                        $date = $startTime->format('d M y H:m') . ' to ' . $endTime->format('H:m');
+                        return [
+                            'transaction_type' => $transaction->transaction_type,
+                            'title' => "Rental PlayStation {$transaction->ps_name} at {$transaction->console_warnet_name}",
+                            'amount' => $amount,
+                            'date' => $date,
+                            'details' => "Booked PlayStation {$transaction->ps_name} from {$startTime->format('H:i')} to {$endTime->format('H:i')} on {$startTime->format('d M y')}",
+                            'transactionId' => $transactionId,
+                        ];
+                    } elseif ($transaction->transaction_type === 'topup') {
+                        $date = Carbon::parse($transaction->transaction_date)->format('d M y H:m');
+                        return [
+                            'transaction_type' => $transaction->transaction_type,
+                            'title' => "Top Up for {$transaction->topup_game_name}",
+                            'amount' => $amount,
+                            'date' => $date,
+                            'details' => "Topped up {$amount} for {$transaction->topup_game_name}",
+                            'transactionId' => $transactionId,
+                        ];
+                    } elseif ($transaction->transaction_type === 'joki') {
+                        $date = Carbon::parse($transaction->transaction_date)->format('d M y H:m');
+                        return [
+                            'transaction_type' => $transaction->transaction_type,
+                            'title' => "Joki Service for {$transaction->joki_game_name}",
+                            'amount' => $amount,
+                            'date' => $date,
+                            'details' => $transaction->joki_service_description ?? "Joki service for {$transaction->joki_game_name}",
+                            'transactionId' => $transactionId,
+                        ];
+                    } else {
+                        $date = Carbon::parse($transaction->transaction_date)->format('d M y H:m');
+                        return [
+                            'transaction_type' => $transaction->transaction_type,
+                            'title' => "Transaction {$transaction->transaction_type}",
+                            'amount' => $amount,
+                            'date' => $date,
+                            'details' => "Details for {$transaction->transaction_type} transaction",
+                            'transactionId' => $transactionId,
+                        ];
+                    }
+                } catch (\Exception $e) {
+                    // Fallback for invalid dates
                     return [
-                        'transaction_type' => $transaction->transaction_type,
-                        'title' => "Rental PC {$transaction->pc_name} at {$transaction->pc_warnet_name}",
-                        'amount' => $amount,
-                        'date' => $date,
-                        'details' => "Booked PC {$transaction->pc_name} from {$startTime->format('H:i')} to {$endTime->format('H:i')} on {$startTime->format('d M Y')}",
-                        'transactionId' => $transactionId,
-                    ];
-                } elseif ($transaction->transaction_type === 'console_booking' && $transaction->console_start_time && $transaction->console_end_time) {
-                    $startTime = Carbon::parse($transaction->console_start_time);
-                    $endTime = Carbon::parse($transaction->console_end_time);
-                    return [
-                        'transaction_type' => $transaction->transaction_type,
-                        'title' => "Rental PlayStation {$transaction->ps_name} at {$transaction->console_warnet_name}",
-                        'amount' => $amount,
-                        'date' => $date,
-                        'details' => "Booked PlayStation {$transaction->ps_name} from {$startTime->format('H:i')} to {$endTime->format('H:i')} on {$startTime->format('d M Y')}",
-                        'transactionId' => $transactionId,
-                    ];
-                } elseif ($transaction->transaction_type === 'topup') {
-                    return [
-                        'transaction_type' => $transaction->transaction_type,
-                        'title' => "Top Up for {$transaction->topup_game_name}",
-                        'amount' => $amount,
-                        'date' => $date,
-                        'details' => "Topped up {$amount} for {$transaction->topup_game_name}",
-                        'transactionId' => $transactionId,
-                    ];
-                } elseif ($transaction->transaction_type === 'joki') {
-                    return [
-                        'transaction_type' => $transaction->transaction_type,
-                        'title' => "Joki Service for {$transaction->joki_game_name}",
-                        'amount' => $amount,
-                        'date' => $date,
-                        'details' => $transaction->joki_service_description ?? "Joki service for {$transaction->joki_game_name}",
-                        'transactionId' => $transactionId,
-                    ];
-                } else {
-                    return [
-                        'transaction_type' => $transaction->transaction_type,
-                        'title' => "Transaction {$transaction->transaction_type}",
-                        'amount' => $amount,
-                        'date' => $date,
-                        'details' => "Details for {$transaction->transaction_type} transaction",
-                        'transactionId' => $transactionId,
+                        'transaction_type' => $transaction->transaction_type ?? 'unknown',
+                        'title' => "Transaction Error",
+                        'amount' => $amount ?? "Rp 0",
+                        'date' => 'Invalid Date',
+                        'details' => "Error processing transaction: Invalid date",
+                        'transactionId' => $transactionId ?? 'Unknown ID',
                     ];
                 }
-            });
+            })->all();
 
             return response()->json([
                 'status' => 'success',

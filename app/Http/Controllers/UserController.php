@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use App\Models\User;
@@ -86,7 +87,28 @@ class UserController extends Controller
             'user' => $request->user(),
         ]);
     }
+    public function search(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|min:1',
+            'exclude_id' => 'sometimes|exists:users,id_user',
+        ]);
 
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $query = User::where('name', 'like', '%' . $request->name . '%')
+            ->select('id_user', 'name', 'email');
+
+        if ($request->has('exclude_id')) {
+            $query->where('id_user', '!=', $request->exclude_id);
+        }
+
+        $users = $query->get();
+
+        return response()->json($users, 200);
+    }
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
