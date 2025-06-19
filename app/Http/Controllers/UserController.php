@@ -6,13 +6,35 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 
 class UserController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        $users = User::select('id_user', 'name', 'email')->get();
-        return response()->json($users);
+        $validator = Validator::make($request->all(), [
+            'exclude_id' => 'required|integer|exists:users,id_user',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $excludeId = $request->query('exclude_id');
+
+        try {
+            $users = User::select('id_user', 'name', 'email')
+                ->where('id_user', '!=', $excludeId)
+                ->get();
+
+
+            return response()->json($users, 200);
+        } catch (\Exception $e) {
+
+            return response()->json(['message' => 'Server error'], 500);
+        }
     }
 
     public function login(Request $request)
@@ -86,6 +108,88 @@ class UserController extends Controller
             'success' => true,
             'user' => $request->user(),
         ]);
+    }
+    public function updateProfile(Request $request)
+    {
+        // Log incoming request
+        Log::info('UpdateProfile Request', [
+            'input' => $request->all(),
+            'headers' => $request->headers->all(),
+        ]);
+
+        // Validate input
+        $validator = Validator::make($request->all(), [
+            'id_user' => 'required|integer|exists:users,id_user',
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255',
+        ]);
+
+        if ($validator->fails()) {
+            Log::warning('UpdateProfile Validation Failed', ['errors' => $validator->errors()]);
+            return response()->json([
+                'success' => false,
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $idUser = $request->input('id_user');
+        $name = $request->input('name');
+        $email = $request->input('email');
+
+        try {
+            // Check if email is unique (excluding current user)
+            Log::info('Checking email uniqueness', ['email' => $email, 'id_user' => $idUser]);
+            $emailExists = DB::selectOne(
+                'SELECT COUNT(*) as count FROM users WHERE email = ? AND id_user != ?',
+                [$email, $idUser]
+            );
+
+            if ($emailExists->count > 0) {
+                Log::warning('UpdateProfile: Email already taken', ['email' => $email]);
+                return response()->json([
+                    'success' => false,
+                    'errors' => ['email' => ['The email has already been taken.']],
+                ], 422);
+            }
+
+            // Update user profile
+            Log::info('Updating user profile', ['id_user' => $idUser, 'name' => $name, 'email' => $email]);
+            $affected = DB::update(
+                'UPDATE users SET name = ?, email = ?, updated_at = NOW() WHERE id_user = ?',
+                [$name, $email, $idUser]
+            );
+
+            if ($affected === 0) {
+                Log::warning('UpdateProfile: No rows affected', ['id_user' => $idUser]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User not found or no changes made',
+                ], 404);
+            }
+
+            // Fetch updated user data
+            Log::info('Fetching updated user data', ['id_user' => $idUser]);
+            $updatedUser = DB::selectOne(
+                'SELECT id_user, name, email, money, created_at, updated_at FROM users WHERE id_user = ?',
+                [$idUser]
+            );
+
+            Log::info('UpdateProfile: Success', ['updatedUser' => (array)$updatedUser]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Profile updated successfully',
+                'user' => $updatedUser,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('UpdateProfile: Exception occurred', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Error updating profile: ' . $e->getMessage(),
+            ], 500);
+        }
     }
     public function search(Request $request)
     {

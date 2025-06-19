@@ -13,6 +13,7 @@ use App\Http\Controllers\JokiController;
 use App\Http\Controllers\FriendController;
 use App\Http\Controllers\FriendRequestController;
 use App\Http\Controllers\MessageController;
+use App\Http\Controllers\CommunityChatController;
 
 Route::get('/warnets', [WarnetController::class, 'index']);
 Route::get('/pcs', [PcController::class, 'index']);
@@ -30,6 +31,7 @@ Route::post('/register', [UserController::class, 'register']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [UserController::class, 'logout']);
     Route::get('/user', [UserController::class, 'user']);
+    Route::put('/user', [UserController::class, 'updateProfile']); // New route for profile update
     Route::post('/topup', [TopUpController::class, 'store']);
     Route::get('/history/{userId}', [BookedPcController::class, 'getHistory']);
     Route::get('/ps_history/{userId}', [BookedPsController::class, 'getHistory']);
@@ -39,6 +41,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/friend_requests', [FriendRequestController::class, 'store']);
     Route::put('/friend_requests/{id}', [FriendRequestController::class, 'update']);
     Route::get('/users', [UserController::class, 'index']);
-    Route::get('/messages', [MessageController::class, 'index']); // Fetch messages
-    Route::post('/messages', [MessageController::class, 'store']); // Send message
+    Route::get('/messages', [MessageController::class, 'index']);
+    Route::post('/messages', [MessageController::class, 'store']);
+    Route::get('/community-chats', [CommunityChatController::class, 'index']);
+    Route::post('/community-chats', [CommunityChatController::class, 'store']);
 });
